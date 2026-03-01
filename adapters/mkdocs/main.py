@@ -8,14 +8,20 @@ yaml = YAML(typ='rt')
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 
+DEFAULTS = {
+    "main_docs_path":   Path("/root/stormbpmn_doc_project/stormbpmn-docs"),
+    "main_mkdocs_path": Path("/root/stormbpmn_doc_project/mkdocs"),
+    "custom_dir_path":  Path("/root/stormbpmn_doc_project/stormbpmn-docs-styles"),
+}
+
 # ========== Load paths and configurations ================== #
 # Defoult paths: 
 # - main_docs_path   = Path("/root/stormbpmn_doc_project/stormbpmn-docs")
 # - main_mkdocs_path = Path("/root/stormbpmn_doc_project/mkdocs")
 # - custom_dir_path  = Path("/root/stormbpmn_doc_project/stormbpmn-docs-styles")
-main_docs_path       = Path(sys.argv[1])
-main_mkdocs_path     = Path(sys.argv[2])
-custom_dir_path      = Path(sys.argv[3])
+main_docs_path       = Path(sys.argv[1]) if len(sys.argv) >= 2 else DEFAULTS["main_docs_path"]
+main_mkdocs_path     = Path(sys.argv[2]) if len(sys.argv) >= 3 else DEFAULTS["main_mkdocs_path"]
+custom_dir_path      = Path(sys.argv[3]) if len(sys.argv) >= 4 else DEFAULTS["custom_dir_path"]
 global_vars_path     = Path(f"{main_docs_path}/global_vars.yaml")
 mkdocs_config_path   = Path(f"{main_mkdocs_path}/mkdocs.yml")
 toc_docs_path        = Path(f"{main_docs_path}/toc.yaml")
