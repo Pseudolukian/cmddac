@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from PIL import Image, ImageDraw
 from psd_tools import PSDImage
@@ -15,7 +19,8 @@ class PSDHandler:
     def __init__(self, output_dir: Path, image_ext: str = "webp"):
         self.image_ext = image_ext.lower().lstrip(".")
         self.output_dir = Path(output_dir)
-        self._cache: dict[Path, PSDImage] = {}
+        self._cache: dict[str, PSDImage] = {}
+        self._downloaded_tmp: set[Path] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -23,10 +28,12 @@ class PSDHandler:
 
     def render(self, config: PSDConfig) -> Path:
         """Render layers from a PSDConfig and save as webp."""
-        psd_path = Path(config.psd_path)
-        if psd_path not in self._cache:
-            self._cache[psd_path] = PSDImage.open(psd_path)
-        self.psd = self._cache[psd_path]
+        source = config.psd_path.strip()
+        cache_key = source
+        if cache_key not in self._cache:
+            psd_path = self._resolve_psd_source(source)
+            self._cache[cache_key] = PSDImage.open(psd_path)
+        self.psd = self._cache[cache_key]
 
         canvas_size = (self.psd.width, self.psd.height)
 
@@ -160,10 +167,35 @@ class PSDHandler:
     def terminate(self) -> None:
         """Clear PSD cache."""
         self._cache.clear()
+        for tmp_file in list(self._downloaded_tmp):
+            try:
+                tmp_file.unlink(missing_ok=True)
+            finally:
+                self._downloaded_tmp.discard(tmp_file)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_psd_source(self, source: str) -> Path:
+        """Resolve local path or download http(s) PSD to a temporary file."""
+        parsed = urlparse(source)
+        if parsed.scheme in {"http", "https"}:
+            return self._download_psd(source)
+
+        return Path(source)
+
+    def _download_psd(self, url: str) -> Path:
+        """Download PSD URL into a temporary file and return its local path."""
+        suffix = Path(urlparse(url).path).suffix or ".psd"
+        fd, tmp_name = tempfile.mkstemp(prefix="umda_psd_", suffix=suffix)
+        tmp_path = Path(tmp_name)
+        with urlopen(url, timeout=60) as response:
+            with open(fd, "wb", closefd=True) as out:
+                shutil.copyfileobj(response, out)
+
+        self._downloaded_tmp.add(tmp_path)
+        return tmp_path
 
     def _set_visibility_recursive(self, layer, visible: bool) -> None:
         layer._record.flags.visible = not visible
