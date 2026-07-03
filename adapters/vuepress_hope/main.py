@@ -184,32 +184,27 @@ class Vuepress_hopeAdapter:
         copied = [p for p in doc_output.iterdir() if p.name not in skip_dirs]
         print(f"[VuepressHope] copied {len(copied)} items to {src_dir}")
 
-        # Convert markdown image links /media/... to raw HTML <img> tags
-        # VuePress/Vite tries to resolve ![](/media/...) as module imports, which fails.
-        # Raw <img> tags are passed through as-is.
+        # Convert markdown image links /media/... to use media_base_url
+        # Vite config (external: [/^\/media\/.*/]) already excludes /media/ paths
+        # from resolution, so markdown ![](/media/...) works natively in VuePress.
+        # Only convert when media_base_url is an HTTP URL (external CDN like S3).
         import re
         _ABS_IMG_RE = re.compile(r'!\[([^\]]*)\]\((/media/[^)]+)\)')
         img_fix_count = 0
-        base_prefix = self.base.rstrip('/')
-        for md_file in sorted(src_dir.rglob("*.md")):
-            if '.vuepress' in str(md_file):
-                continue
-            content = md_file.read_text(encoding="utf-8")
-            if '/media/' not in content:
-                continue
-            if self.media_base_url.startswith('http'):
+        if self.media_base_url.startswith('http'):
+            for md_file in sorted(src_dir.rglob("*.md")):
+                if '.vuepress' in str(md_file):
+                    continue
+                content = md_file.read_text(encoding="utf-8")
+                if '/media/' not in content:
+                    continue
                 new_content = _ABS_IMG_RE.sub(
                     lambda m: f'![{m.group(1)}]({self.media_base_url}{m.group(2)})',
                     content
                 )
-            else:
-                new_content = _ABS_IMG_RE.sub(
-                    lambda m: f'<img src="{base_prefix}{m.group(2)}" alt="{m.group(1)}">',
-                    content
-                )
-            if new_content != content:
-                img_fix_count += 1
-                md_file.write_text(new_content, encoding="utf-8")
+                if new_content != content:
+                    img_fix_count += 1
+                    md_file.write_text(new_content, encoding="utf-8")
         if img_fix_count:
             print(f"[VuepressHope] converted {img_fix_count} /media/ image links")
 
