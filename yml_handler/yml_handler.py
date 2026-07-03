@@ -1,5 +1,4 @@
 import re
-import os
 import yaml
 from pathlib import Path
 
@@ -11,34 +10,6 @@ UMDA_ROOT = Path(__file__).parent.parent
 
 # Matches top-level: include: ./some/file.yml
 _INCLUDE_RE = re.compile(r'^include:\s*(.+)$', re.MULTILINE)
-_ENV_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}')
-
-
-def _expand_env_vars(value: str) -> str:
-    """Expand ${VAR} and ${VAR:-default} placeholders from environment."""
-
-    def repl(m: re.Match) -> str:
-        name = m.group(1)
-        default = m.group(2)
-        env_val = os.getenv(name)
-        if env_val is not None and env_val != "":
-            return env_val
-        if default is not None:
-            return default
-        raise ValueError(f"Environment variable '{name}' is not set")
-
-    return _ENV_RE.sub(repl, value)
-
-
-def _resolve_env_in_obj(obj):
-    """Recursively resolve env placeholders in dict/list/string values."""
-    if isinstance(obj, dict):
-        return {k: _resolve_env_in_obj(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_resolve_env_in_obj(v) for v in obj]
-    if isinstance(obj, str):
-        return _expand_env_vars(obj)
-    return obj
 
 
 class YMLHandler:
@@ -48,10 +19,7 @@ class YMLHandler:
 
         raw = self._load_raw(self.umda_yml_file)
 
-        raw_config = dict(raw.get("config", {}))
-        if "S3" in raw_config and "s3" not in raw_config:
-            raw_config["s3"] = raw_config.pop("S3")
-        self.config = UMDAConfig(**raw_config)
+        self.config = UMDAConfig(**raw.get("config", {}))
 
         # Parse adapters — key in yml is "adapers" (legacy typo kept)
         raw_adapters: dict = raw.get("adapers", {})
@@ -104,8 +72,7 @@ class YMLHandler:
 
     def _load_raw(self, file_path: Path) -> dict:
         with open(file_path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-            return _resolve_env_in_obj(raw)
+            return yaml.safe_load(f) or {}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
