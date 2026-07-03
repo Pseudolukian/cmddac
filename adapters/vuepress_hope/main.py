@@ -190,20 +190,23 @@ class Vuepress_hopeAdapter:
         import re
         _ABS_IMG_RE = re.compile(r'!\[([^\]]*)\]\((/media/[^)]+)\)')
         img_fix_count = 0
+        base_prefix = self.base.rstrip('/')
         for md_file in sorted(src_dir.rglob("*.md")):
             if '.vuepress' in str(md_file):
                 continue
             content = md_file.read_text(encoding="utf-8")
-            # /media/ links should already be absolute HTTP URLs from md_handler
-            # (media_base_url in umda.yml is http://...)
-            # But if any relative /media/ remain, skip — they won't resolve in VuePress
-            if '/media/' not in content or 'http' in content.split('/media/')[0][-10:]:
+            if '/media/' not in content:
                 continue
-            # Safety: convert any straggler /media/ markdown images to use media_base_url
-            new_content = _ABS_IMG_RE.sub(
-                lambda m: f'![{m.group(1)}]({self.media_base_url}{m.group(2)})',
-                content
-            )
+            if self.media_base_url.startswith('http'):
+                new_content = _ABS_IMG_RE.sub(
+                    lambda m: f'![{m.group(1)}]({self.media_base_url}{m.group(2)})',
+                    content
+                )
+            else:
+                new_content = _ABS_IMG_RE.sub(
+                    lambda m: f'<img src="{base_prefix}{m.group(2)}" alt="{m.group(1)}">',
+                    content
+                )
             if new_content != content:
                 img_fix_count += 1
                 md_file.write_text(new_content, encoding="utf-8")
