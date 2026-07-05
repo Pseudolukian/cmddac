@@ -152,7 +152,10 @@ class MDHandle:
         for src in sorted(src_root.rglob("*")):
             if not src.is_file():
                 continue
-            rel = src.relative_to(src_root)
+            # Preserve the media/ segment in the destination path so that
+            # absolute /media/... links (and S3 media_base_url + /media/...)
+            # resolve correctly. docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
+            rel = src.relative_to(self.docs_dir)
             dst = self.local_media_root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
