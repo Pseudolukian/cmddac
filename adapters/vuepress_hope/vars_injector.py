@@ -17,6 +17,10 @@ from typing import Any
 # Matches {{ dotted.path }} but NOT {{ $frontmatter... }} and NOT {{ page.meta... }}
 _VAR_RE = re.compile(r'\{\{\s*((?![\$]|page\.meta)[\w]+(?:\.[\w]+)*)\s*\}\}')
 
+# Matches markdown image links ![alt](url) — protected from var rewriting
+# so that {{ alias }} inside URLs is left for the renderer to resolve.
+_IMG_RE = re.compile(r'!\[[^\]]*\]\([^)]+\)')
+
 
 def _resolve(data: dict, dotted_key: str) -> Any | None:
     """Resolve 'a.b.c' from nested dict."""
@@ -66,6 +70,23 @@ class VuepressVarsInjector:
     def process_file(self, md_path: Path) -> bool:
         """Process one MD file. Returns True if modified."""
         content = md_path.read_text(encoding="utf-8")
+
+        # Protect markdown image links ![alt](url) from var rewriting.
+        # {{ alias }} inside image URLs must be left for the renderer to
+        # resolve (e.g. VitePress resolves it from frontmatter).
+        placeholders: dict[str, str] = {}
+
+        def _stash_img(m: re.Match) -> str:
+            key = f"__UMDA_IMG_PLACEHOLDER_{len(placeholders)}__"
+            placeholders[key] = m.group(0)
+            return key
+
+        def _restore_imgs(text: str) -> str:
+            for key, original in placeholders.items():
+                text = text.replace(key, original)
+            return text
+
+        content = _IMG_RE.sub(_stash_img, content)
 
         # Find all {{ var.path }} references
         var_refs: set[str] = set()
@@ -124,6 +145,9 @@ class VuepressVarsInjector:
             if line.startswith('#'):
                 lines[i] = _FM_VAR_RE.sub(_resolve_heading, line)
         body = '\n'.join(lines)
+
+        # Restore image links (with original {{ alias }} etc. intact)
+        body = _restore_imgs(body)
 
         # Write back
         md_path.write_text(_rebuild_content(fm, body), encoding="utf-8")
