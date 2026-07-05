@@ -131,8 +131,34 @@ class MDHandle:
     def run(self):
         # .meta.yml support removed — metadata now lives in frontmatter
 
+        self.copy_media_dir()
+
         for md_file in sorted(self.docs_dir.rglob("*.md")):
             self.md_loader(md_file)
+
+    def copy_media_dir(self):
+        """Copy docs_dir/media/ -> local_media_root as-is (no conversion).
+
+        Mirrors the media directory into the media storage output so that
+        absolute /media/... links in MD resolve at render time. Files are
+        copied without re-encoding or extension changes; {{ alias }} and
+        other frontmatter vars in links are left for the renderer to resolve.
+        """
+        src_root = self.docs_dir / "media"
+        if not src_root.exists() or not src_root.is_dir():
+            return
+
+        copied = 0
+        for src in sorted(src_root.rglob("*")):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(src_root)
+            dst = self.local_media_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+
+        print(f"[MDHandle] copied {copied} media file(s): {src_root} -> {self.local_media_root}")
 
     def md_loader(self, md_file: Path):
         content = md_file.read_text(encoding="utf-8")
@@ -261,6 +287,13 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2)
                 img_path_str = m.group(3).strip()
+
+                # Absolute /media/... links (and relative media/...) are served
+                # from the media storage output, populated in bulk by
+                # copy_media_dir(). Frontmatter vars (e.g. {{ alias }}) inside
+                # such links are resolved by the renderer, so leave them as-is.
+                if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
+                    return full_match
 
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
