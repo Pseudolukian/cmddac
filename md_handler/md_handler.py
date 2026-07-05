@@ -137,18 +137,20 @@ class MDHandle:
             self.md_loader(md_file)
 
     def copy_media_dir(self):
-        """Copy docs_dir/media/ -> local_media_root as-is (no conversion).
+        """Copy docs_dir/media/ -> local_media_root with webp conversion.
 
         Mirrors the media directory into the media storage output so that
-        absolute /media/... links in MD resolve at render time. Files are
-        copied without re-encoding or extension changes; {{ alias }} and
-        other frontmatter vars in links are left for the renderer to resolve.
+        absolute /media/... links in MD resolve at render time. Images are
+        converted to the configured image_ext (webp by default); non-image
+        files are copied as-is. {{ alias }} and other frontmatter vars in
+        links are left for the renderer to resolve.
         """
         src_root = self.docs_dir / "media"
         if not src_root.exists() or not src_root.is_dir():
             return
 
-        copied = 0
+        converted = 0
+        img_exts = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"}
         for src in sorted(src_root.rglob("*")):
             if not src.is_file():
                 continue
@@ -156,12 +158,24 @@ class MDHandle:
             # absolute /media/... links (and S3 media_base_url + /media/...)
             # resolve correctly. docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
             rel = src.relative_to(self.docs_dir)
-            dst = self.local_media_root / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            copied += 1
+            src_ext = src.suffix.lower().lstrip(".")
 
-        print(f"[MDHandle] copied {copied} media file(s): {src_root} -> {self.local_media_root}")
+            if src_ext in img_exts and src_ext != "svg":
+                dst = (self.local_media_root / rel).with_suffix(f".{self.image_ext}")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if src_ext == self.image_ext:
+                    shutil.copy2(src, dst)
+                else:
+                    with Image.open(src) as img:
+                        mode = "RGBA" if self.image_ext == "webp" else "RGB"
+                        img.convert(mode).save(dst, format=self.image_ext)
+            else:
+                dst = self.local_media_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            converted += 1
+
+        print(f"[MDHandle] processed {converted} media file(s): {src_root} -> {self.local_media_root}")
 
     def md_loader(self, md_file: Path):
         content = md_file.read_text(encoding="utf-8")
@@ -293,10 +307,13 @@ class MDHandle:
 
                 # Absolute /media/... links (and relative media/...) are served
                 # from the media storage output, populated in bulk by
-                # copy_media_dir(). Frontmatter vars (e.g. {{ alias }}) inside
-                # such links are resolved by the renderer, so leave them as-is.
+                # copy_media_dir(). Rewrite the extension to image_ext (webp)
+                # and prepend media_base_url, but leave frontmatter vars
+                # (e.g. {{ alias }}) for the renderer to resolve.
                 if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
-                    return full_match
+                    rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
+                    count += 1
+                    return f"![{alt}]({self._media_link(rel_path)})"
 
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
