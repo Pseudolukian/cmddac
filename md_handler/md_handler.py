@@ -1,6 +1,7 @@
 import re
 import shutil
 import mimetypes
+import yaml
 from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
@@ -22,6 +23,48 @@ _ARG_RE = re.compile(r'(\w+)=\[([^\]]*)\]')
 
 # Matches include marker: ➡️ (path/to/file.md)
 _INCLUDE_RE = re.compile(r'^➡️\s*\((.+?)\)\s*$', re.MULTILINE)
+
+# Matches {{ var.path }} inside strings (e.g. image URLs) for frontmatter resolution
+_FM_VAR_RE = re.compile(r'\{\{\s*([\w.]+)\s*\}\}')
+
+
+def _parse_frontmatter(md_file: Path) -> dict:
+    """Extract YAML frontmatter from a markdown file. Returns {} if none."""
+    try:
+        content = md_file.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    if not content.startswith("---"):
+        return {}
+    try:
+        end = content.index("---", 3)
+    except ValueError:
+        return {}
+    fm_text = content[3:end].strip()
+    try:
+        return yaml.safe_load(fm_text) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_from_dict(data: dict, dotted_key: str):
+    """Resolve 'a.b.c' from nested dict. Returns None if not found."""
+    node = data
+    for k in dotted_key.split("."):
+        if isinstance(node, dict) and k in node:
+            node = node[k]
+        else:
+            return None
+    return node
+
+
+def _resolve_fm_vars(text: str, fm: dict) -> str:
+    """Replace {{ var.path }} in text with values from frontmatter dict.
+    Unresolved vars are left as-is."""
+    def repl(m: re.Match) -> str:
+        val = _resolve_from_dict(fm, m.group(1))
+        return str(val) if val is not None else m.group(0)
+    return _FM_VAR_RE.sub(repl, text)
 
 
 def _is_s3_media_target(media_out: str, s3_cfg: S3Config | None) -> bool:
@@ -131,8 +174,51 @@ class MDHandle:
     def run(self):
         # .meta.yml support removed — metadata now lives in frontmatter
 
+        self.copy_media_dir()
+
         for md_file in sorted(self.docs_dir.rglob("*.md")):
             self.md_loader(md_file)
+
+    def copy_media_dir(self):
+        """Copy docs_dir/media/ -> local_media_root with webp conversion.
+
+        Mirrors the media directory into the media storage output so that
+        absolute /media/... links in MD resolve at render time. Images are
+        converted to the configured image_ext (webp by default); non-image
+        files are copied as-is. Frontmatter vars in links (e.g. {{ alias }})
+        are resolved in img_replacer from the file's frontmatter.
+        """
+        src_root = self.docs_dir / "media"
+        if not src_root.exists() or not src_root.is_dir():
+            return
+
+        converted = 0
+        img_exts = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"}
+        for src in sorted(src_root.rglob("*")):
+            if not src.is_file():
+                continue
+            # Preserve the media/ segment in the destination path so that
+            # absolute /media/... links (and S3 media_base_url + /media/...)
+            # resolve correctly. docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
+            rel = src.relative_to(self.docs_dir)
+            src_ext = src.suffix.lower().lstrip(".")
+
+            if src_ext in img_exts and src_ext != "svg":
+                dst = (self.local_media_root / rel).with_suffix(f".{self.image_ext}")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if src_ext == self.image_ext:
+                    shutil.copy2(src, dst)
+                else:
+                    with Image.open(src) as img:
+                        mode = "RGBA" if self.image_ext == "webp" else "RGB"
+                        img.convert(mode).save(dst, format=self.image_ext)
+            else:
+                dst = self.local_media_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            converted += 1
+
+        print(f"[MDHandle] processed {converted} media file(s): {src_root} -> {self.local_media_root}")
 
     def md_loader(self, md_file: Path):
         content = md_file.read_text(encoding="utf-8")
@@ -261,6 +347,19 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2)
                 img_path_str = m.group(3).strip()
+
+                # Absolute /media/... links (and relative media/...) are served
+                # from the media storage output, populated in bulk by
+                # copy_media_dir(). Resolve frontmatter vars (e.g. {{ alias }})
+                # from the current file's frontmatter, rewrite the extension to
+                # image_ext (webp), and prepend media_base_url.
+                if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
+                    if "{{" in img_path_str:
+                        fm = _parse_frontmatter(md_file)
+                        img_path_str = _resolve_fm_vars(img_path_str, fm)
+                    rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
+                    count += 1
+                    return f"![{alt}]({self._media_link(rel_path)})"
 
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
