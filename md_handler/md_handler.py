@@ -1,6 +1,7 @@
 import re
 import shutil
 import mimetypes
+import yaml
 from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
@@ -22,6 +23,48 @@ _ARG_RE = re.compile(r'(\w+)=\[([^\]]*)\]')
 
 # Matches include marker: ➡️ (path/to/file.md)
 _INCLUDE_RE = re.compile(r'^➡️\s*\((.+?)\)\s*$', re.MULTILINE)
+
+# Matches {{ var.path }} inside strings (e.g. image URLs) for frontmatter resolution
+_FM_VAR_RE = re.compile(r'\{\{\s*([\w.]+)\s*\}\}')
+
+
+def _parse_frontmatter(md_file: Path) -> dict:
+    """Extract YAML frontmatter from a markdown file. Returns {} if none."""
+    try:
+        content = md_file.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    if not content.startswith("---"):
+        return {}
+    try:
+        end = content.index("---", 3)
+    except ValueError:
+        return {}
+    fm_text = content[3:end].strip()
+    try:
+        return yaml.safe_load(fm_text) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_from_dict(data: dict, dotted_key: str):
+    """Resolve 'a.b.c' from nested dict. Returns None if not found."""
+    node = data
+    for k in dotted_key.split("."):
+        if isinstance(node, dict) and k in node:
+            node = node[k]
+        else:
+            return None
+    return node
+
+
+def _resolve_fm_vars(text: str, fm: dict) -> str:
+    """Replace {{ var.path }} in text with values from frontmatter dict.
+    Unresolved vars are left as-is."""
+    def repl(m: re.Match) -> str:
+        val = _resolve_from_dict(fm, m.group(1))
+        return str(val) if val is not None else m.group(0)
+    return _FM_VAR_RE.sub(repl, text)
 
 
 def _is_s3_media_target(media_out: str, s3_cfg: S3Config | None) -> bool:
@@ -142,8 +185,8 @@ class MDHandle:
         Mirrors the media directory into the media storage output so that
         absolute /media/... links in MD resolve at render time. Images are
         converted to the configured image_ext (webp by default); non-image
-        files are copied as-is. {{ alias }} and other frontmatter vars in
-        links are left for the renderer to resolve.
+        files are copied as-is. Frontmatter vars in links (e.g. {{ alias }})
+        are resolved in img_replacer from the file's frontmatter.
         """
         src_root = self.docs_dir / "media"
         if not src_root.exists() or not src_root.is_dir():
@@ -307,10 +350,13 @@ class MDHandle:
 
                 # Absolute /media/... links (and relative media/...) are served
                 # from the media storage output, populated in bulk by
-                # copy_media_dir(). Rewrite the extension to image_ext (webp)
-                # and prepend media_base_url, but leave frontmatter vars
-                # (e.g. {{ alias }}) for the renderer to resolve.
+                # copy_media_dir(). Resolve frontmatter vars (e.g. {{ alias }})
+                # from the current file's frontmatter, rewrite the extension to
+                # image_ext (webp), and prepend media_base_url.
                 if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
+                    if "{{" in img_path_str:
+                        fm = _parse_frontmatter(md_file)
+                        img_path_str = _resolve_fm_vars(img_path_str, fm)
                     rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
                     count += 1
                     return f"![{alt}]({self._media_link(rel_path)})"
