@@ -14,9 +14,13 @@ from psd_handler.psd_handler import PSDHandler
 # Matches: ![alt]({{ media.path.var }})
 _PSD_LINK_RE = re.compile(r'(!\[(.+?)\]\(\{\{\s*([\w.]+)\s*\}\}\))')
 
-# Matches: ![alt](path/to/image.ext) — local image, not a {{ }} var, not http
-# Alt text may contain [] (e.g. PSD layer directives like Focuses=["A"])
-_IMG_LINK_RE = re.compile(r'(!\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]\((?!https?://)(?!\{\{)([^)]+\.(?:png|jpg|jpeg|gif|webp|svg))\))', re.IGNORECASE)
+# Matches: ![alt](path/to/image.ext) — local image, not http.
+# Alt text may contain [] (e.g. PSD layer directives like Focuses=["A"]).
+# Path may start with {{ var.path }} (e.g. {{ media.screenshots.diagram }}/foo.png);
+# such vars are resolved in img_replacer from global UMDAData.
+# Note: PSD-style links ![alt]({{ var }}) (no extension) are matched earlier by
+# _PSD_LINK_RE, so allowing {{ here cannot shadow them.
+_IMG_LINK_RE = re.compile(r'(!\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]\((?!https?://)([^)]+\.(?:png|jpg|jpeg|gif|webp|svg))\))', re.IGNORECASE)
 
 # Parses alt: "Base;Focuses=[A,B];Frames=[C,D]"
 _ARG_RE = re.compile(r'(\w+)=\[([^\]]*)\]')
@@ -348,15 +352,33 @@ class MDHandle:
                 alt = m.group(2)
                 img_path_str = m.group(3).strip()
 
-                # Absolute /media/... links (and relative media/...) are served
-                # from the media storage output, populated in bulk by
-                # copy_media_dir(). Resolve frontmatter vars (e.g. {{ alias }})
-                # from the current file's frontmatter, rewrite the extension to
-                # image_ext (webp), and prepend media_base_url.
+                # Resolve {{ var.path }} in image paths. Primary source is the
+                # global UMDAData (vars/media.yml etc. with proper nested
+                # structure); frontmatter of the current file is a fallback
+                # (tried both nested and as a flat "a.b.c" key, since YAML
+                # parses `a.b.c: value` as a single string key, not nested).
+                # After resolution the path becomes /media/... or media/...
+                # and is served from the media storage output, populated in
+                # bulk by copy_media_dir(). The extension is rewritten to
+                # image_ext (webp) and media_base_url is prepended.
+                if "{{" in img_path_str:
+                    fm = _parse_frontmatter(md_file)
+
+                    def _resolve_var(var_key: str):
+                        val = self.data.resolve(var_key)
+                        if val is None and fm:
+                            val = _resolve_from_dict(fm, var_key)
+                        if val is None and fm:
+                            val = fm.get(var_key)
+                        return val
+
+                    def _var_repl(mm: re.Match) -> str:
+                        resolved = _resolve_var(mm.group(1))
+                        return str(resolved) if resolved is not None else mm.group(0)
+
+                    img_path_str = _FM_VAR_RE.sub(_var_repl, img_path_str)
+
                 if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
-                    if "{{" in img_path_str:
-                        fm = _parse_frontmatter(md_file)
-                        img_path_str = _resolve_fm_vars(img_path_str, fm)
                     rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
                     count += 1
                     return f"![{alt}]({self._media_link(rel_path)})"
