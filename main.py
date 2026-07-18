@@ -17,6 +17,7 @@ from md_handler.md_handler import MDHandle
 from psd_handler.psd_handler import PSDHandler
 from config_handler.config_handler import MkDocsConfigHandler, _load_with_includes
 from data_models.umda_data_yml import UMDAData
+from logging_utils import warn, error
 
 
 def usage():
@@ -33,7 +34,7 @@ def find_umda_yml(start: Path) -> Path:
             return candidate
         parent = current.parent
         if parent == current:
-            print(f"ERROR: umda.yml not found in '{start}' or any parent directory.")
+            error(f"umda.yml not found in '{start}' or any parent directory.")
             sys.exit(1)
         current = parent
 
@@ -63,7 +64,7 @@ def build(adapter_name: str):
 
     if adapter_name not in yml_handler.adapters:
         available = list(yml_handler.adapters.keys())
-        print(f"ERROR: adapter '{adapter_name}' not found in umda.yml. Available: {available}")
+        error(f"adapter '{adapter_name}' not found in umda.yml. Available: {available}")
         sys.exit(1)
 
     adapter_cfg = yml_handler.adapters[adapter_name]
@@ -129,7 +130,7 @@ def _run_adapter(adapter_name: str, adapter_cfg, src_root=None):
     adapter_main = adapter_dir / "main.py"
 
     if not adapter_main.exists():
-        print(f"WARN: no adapter module found at {adapter_main}, skipping post-processing")
+        warn(f"no adapter module found at {adapter_main}, skipping post-processing")
         return
 
     import importlib.util
@@ -141,7 +142,7 @@ def _run_adapter(adapter_name: str, adapter_cfg, src_root=None):
     adapter_class = getattr(mod, "MKdocsAdapter", None) or getattr(mod, class_name, None)
 
     if adapter_class is None:
-        print(f"WARN: adapter class not found in {adapter_main}, skipping")
+        warn(f"adapter class not found in {adapter_main}, skipping")
         return
 
     swap_list_path = adapter_cfg.swap_list or (adapter_dir / "swap_list.yml")

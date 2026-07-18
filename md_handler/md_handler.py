@@ -8,6 +8,7 @@ from data_models.umda_data_yml import UMDAData
 from data_models.umda_config import AdapterConfig
 from data_models.psd_config import PSDConfig
 from psd_handler.psd_handler import PSDHandler
+from logging_utils import warn, error
 
 # Matches: ![alt]({{ media.path.var }})
 _PSD_LINK_RE = re.compile(r'(!\[(.+?)\]\(\{\{\s*([\w.]+)\s*\}\}\))')
@@ -88,6 +89,14 @@ class MDHandle:
         self.psd_handler = psd_handler
 
         self.local_media_root.mkdir(parents=True, exist_ok=True)
+
+    def _rel_md(self, md_file: Path) -> str:
+        # ponytail: путь относительно docs_dir для GitHub annotations — читаемость
+        # важнее подсветки в PR view (относительный путь вне workspace root не подсветит)
+        try:
+            return str(md_file.relative_to(self.docs_dir))
+        except ValueError:
+            return str(md_file)
 
     def run(self):
         # .meta.yml support removed — metadata now lives in frontmatter
@@ -179,18 +188,20 @@ class MDHandle:
 
     def _expand_includes(self, content: str, md_file: Path, include_stack: set[Path]) -> tuple[str, int]:
         include_count = 0
+        rel_md = self._rel_md(md_file)
 
         def replacer(m: re.Match) -> str:
             nonlocal include_count
             include_path = m.group(1).strip()
+            line_no = content[:m.start()].count("\n") + 1
             target = self._resolve_include_target(include_path, md_file)
             if not target:
-                print(f"  [include] WARNING: not found: {include_path} (in {md_file})")
+                error(f"include not found: {include_path}", file=rel_md, line=line_no)
                 return m.group(0)
 
             target_resolved = target.resolve()
             if target_resolved in include_stack:
-                print(f"  [include] WARNING: recursive include skipped: {target} (in {md_file})")
+                error(f"recursive include skipped: {target}", file=rel_md, line=line_no)
                 return m.group(0)
 
             included_raw = target.read_text(encoding="utf-8")
@@ -208,7 +219,7 @@ class MDHandle:
 
         current_file = md_file.resolve()
         if current_file in include_stack:
-            print(f"  [include] WARNING: recursive include skipped: {md_file}")
+            error(f"recursive include skipped: {md_file}", file=self._rel_md(md_file))
             return content, count
 
         include_stack.add(current_file)
@@ -221,10 +232,12 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2).strip()
                 var_path = m.group(3).strip()
+                line_no = content[:m.start()].count("\n") + 1
+                rel_md = self._rel_md(md_file)
 
                 psd_path = self.data.resolve(var_path)
                 if not psd_path:
-                    print(f"  WARN: cannot resolve '{var_path}' — skipping")
+                    warn(f"cannot resolve variable '{var_path}'", file=rel_md, line=line_no)
                     return full_match
 
                 parts = alt.split(";")
@@ -241,7 +254,7 @@ class MDHandle:
                     config = PSDConfig(psd_path=str(psd_path), base_layer=base_layer, **kwargs)
                     out_path = self.psd_handler.render(config)
                 except Exception as e:
-                    print(f"  ERROR rendering '{alt}': {e}")
+                    error(f"rendering PSD '{alt}': {e}", file=rel_md, line=line_no)
                     return full_match
 
                 count += 1
@@ -260,6 +273,8 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2)
                 img_path_str = m.group(3).strip()
+                line_no = content[:m.start()].count("\n") + 1
+                rel_md = self._rel_md(md_file)
 
                 # Resolve {{ var.path }} in image paths. Primary source is the
                 # global UMDAData (vars/media.yml etc. with proper nested
@@ -299,7 +314,7 @@ class MDHandle:
 
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
-                    print(f"  WARN: image not found '{src}' — skipping")
+                    error(f"image not found: '{src}'", file=rel_md, line=line_no)
                     return full_match
 
                 try:

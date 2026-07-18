@@ -13,6 +13,8 @@ import yaml
 from pathlib import Path
 from typing import Any
 
+from logging_utils import error
+
 UMDA_ROOT = Path(__file__).parent.parent.parent
 
 
@@ -154,11 +156,11 @@ class Vuepress_hopeAdapter:
         template_path = Path(__file__).parent / "templates" / "config.j2"
 
         if not nav_path.exists():
-            print(f"[VuepressHope] ERROR: nav.yaml not found: {nav_path}")
+            error(f"nav.yaml not found: {nav_path}", file=str(nav_path))
             return
 
         if not template_path.exists():
-            print(f"[VuepressHope] ERROR: template not found: {template_path}")
+            error(f"template not found: {template_path}", file=str(template_path))
             return
 
         # Copy UMDA output docs into VuePress src/ directory
