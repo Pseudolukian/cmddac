@@ -6,6 +6,7 @@ export default defineUserConfig({
     bundler: viteBundler({
         viteOptions: {
             build: {
+                sourcemap: true,
                 rollupOptions: {
                     external: [/^\/media\/.*/],
                 },

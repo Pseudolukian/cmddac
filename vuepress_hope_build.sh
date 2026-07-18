@@ -59,7 +59,7 @@ python3 "$_SD/main.py" vuepress_hope build || { echo "ERROR: UMDA failed"; cd "$
 echo ""
 echo "▶ Step 2: VuePress build"
 cd "$VP_PROJECT" || { echo "ERROR: can't cd to VuePress project '$VP_PROJECT'"; cd "$_OD"; return 1 2>/dev/null; exit 1; }
-npx vuepress-vite build src --dest "$SITE_DIR" || { echo "ERROR: VuePress failed"; cd "$_OD"; return 1 2>/dev/null; exit 1; }
+npx vuepress-vite build src --dest "$SITE_DIR" --debug || { echo "ERROR: VuePress failed"; cd "$_OD"; return 1 2>/dev/null; exit 1; }
 
 echo ""
 echo "✔ Done → $SITE_DIR"
