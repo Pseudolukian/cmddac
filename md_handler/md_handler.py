@@ -1,13 +1,11 @@
 import re
 import shutil
-import mimetypes
 import yaml
-from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
 
 from data_models.umda_data_yml import UMDAData
-from data_models.umda_config import AdapterConfig, S3Config
+from data_models.umda_config import AdapterConfig
 from data_models.psd_config import PSDConfig
 from psd_handler.psd_handler import PSDHandler
 
@@ -71,80 +69,6 @@ def _resolve_fm_vars(text: str, fm: dict) -> str:
     return _FM_VAR_RE.sub(repl, text)
 
 
-def _is_s3_media_target(media_out: str, s3_cfg: S3Config | None) -> bool:
-    """Detect S3 media target.
-
-    Supported forms:
-    - s3://bucket[/prefix]
-    - bucket-name (shorthand, only when S3 config is present)
-    """
-    raw = str(media_out).strip()
-    if raw.lower().startswith("s3://"):
-        return True
-    if not s3_cfg:
-        return False
-    if not raw:
-        return False
-    if "/" in raw or "\\" in raw:
-        return False
-    if raw.startswith((".", "~")):
-        return False
-    if Path(raw).is_absolute():
-        return False
-    return True
-
-
-def _parse_s3_target(media_out: str) -> tuple[str, str]:
-    """Parse S3 target from s3://bucket[/prefix] or bucket-name shorthand."""
-    raw = str(media_out).strip()
-    if raw.lower().startswith("s3://"):
-        parsed = urlparse(raw)
-        bucket = parsed.netloc.strip()
-        prefix = parsed.path.strip("/")
-        return bucket, prefix
-
-    # Shorthand: bucket-name
-    return raw.strip("/"), ""
-
-
-def _normalize_s3_media_base_url(
-    raw_base_url: str,
-    s3_cfg: S3Config | None,
-    s3_bucket: str,
-    s3_prefix: str,
-) -> str:
-    """Resolve media base URL for S3 mode.
-
-    Rules:
-    - If base URL is an absolute http(s) URL, keep it as-is.
-    - If base URL is empty, or looks like bucket shorthand/s3://..., build URL
-      from S3 endpoint + bucket + prefix.
-    """
-    base = (raw_base_url or "").strip().rstrip("/")
-    if base.lower().startswith(("http://", "https://")):
-        return base
-
-    endpoint = (s3_cfg.endpoint_url.strip().rstrip("/") if s3_cfg and s3_cfg.endpoint_url else "")
-    if not endpoint:
-        return base
-
-    inferred_base = f"{endpoint}/{s3_bucket}"
-    if s3_prefix:
-        inferred_base = f"{inferred_base}/{s3_prefix}"
-
-    if not base:
-        return inferred_base
-
-    base_s3_bucket, base_s3_prefix = _parse_s3_target(base)
-    if base.lower().startswith("s3://") or "/" not in base:
-        resolved = f"{endpoint}/{base_s3_bucket}"
-        if base_s3_prefix:
-            resolved = f"{resolved}/{base_s3_prefix}"
-        return resolved
-
-    return base
-
-
 class MDHandle:
     def __init__(
         self,
@@ -152,28 +76,18 @@ class MDHandle:
         docs_dir: Path,
         adapter_cfg: AdapterConfig,
         psd_handler: PSDHandler,
-        s3_cfg: S3Config | None = None,
-        local_media_root: Path | None = None,
     ):
         self.data = data
         self.docs_dir = Path(docs_dir)
         self.adapter_cfg = adapter_cfg
         self.doc_output = Path(adapter_cfg.doc_output)
-        self.media_storage_output_raw = str(adapter_cfg.media.media_storage_output)
-        self.s3_enabled = _is_s3_media_target(self.media_storage_output_raw, s3_cfg)
-        self.local_media_root = Path(local_media_root) if local_media_root else Path(self.media_storage_output_raw)
-        self.media_storage_output = Path(self.media_storage_output_raw) if not self.s3_enabled else self.local_media_root
+        self.media_storage_output = Path(adapter_cfg.media.media_storage_output)
+        self.local_media_root = self.media_storage_output
         self.image_ext = adapter_cfg.media.image_extantion.lower().lstrip(".")
         self.media_base_url = adapter_cfg.media.media_base_url.rstrip("/")
         self.psd_handler = psd_handler
-        self.s3_cfg = s3_cfg
-        self.s3_client = None
-        self.s3_bucket = ""
-        self.s3_prefix = ""
 
         self.local_media_root.mkdir(parents=True, exist_ok=True)
-        if self.s3_enabled:
-            self._init_s3_client()
 
     def run(self):
         # .meta.yml support removed — metadata now lives in frontmatter
@@ -202,8 +116,8 @@ class MDHandle:
             if not src.is_file():
                 continue
             # Preserve the media/ segment in the destination path so that
-            # absolute /media/... links (and S3 media_base_url + /media/...)
-            # resolve correctly. docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
+            # absolute /media/... links resolve correctly.
+            # docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
             rel = src.relative_to(self.docs_dir)
             src_ext = src.suffix.lower().lstrip(".")
 
@@ -333,10 +247,6 @@ class MDHandle:
 
                 count += 1
                 out = Path(out_path)
-                if self.s3_enabled and out.is_relative_to(self.local_media_root):
-                    rel_path = out.relative_to(self.local_media_root)
-                    # self._upload_to_s3(out, rel_path)
-                    return f"![{alt}]({self._media_link(rel_path)})"
                 if self.media_base_url and out.is_relative_to(self.media_storage_output):
                     rel_path = out.relative_to(self.media_storage_output)
                     return f"![{alt}]({self._media_link(rel_path)})"
@@ -405,10 +315,6 @@ class MDHandle:
                         img.convert(mode).save(dst, format=self.image_ext)
 
                 count += 1
-                if self.s3_enabled and dst.is_relative_to(self.local_media_root):
-                    rel_path = dst.relative_to(self.local_media_root)
-#                # self._upload_to_s3(dst, rel_path)
-                    return f"![{alt}]({self._media_link(rel_path)})"
                 if self.media_base_url:
                     rel_path = dst.relative_to(self.media_storage_output)
                     return f"![{alt}]({self._media_link(rel_path)})"
@@ -419,59 +325,8 @@ class MDHandle:
         finally:
             include_stack.remove(current_file)
 
-    def _init_s3_client(self) -> None:
-        self.s3_bucket, self.s3_prefix = _parse_s3_target(self.media_storage_output_raw)
-        if not self.s3_bucket:
-            raise ValueError("S3 media_storage_output must be in format s3://bucket[/prefix] or bucket-name")
-
-        self.media_base_url = _normalize_s3_media_base_url(
-            self.media_base_url,
-            self.s3_cfg,
-            self.s3_bucket,
-            self.s3_prefix,
-        )
-
-        try:
-            import boto3
-        except ImportError as e:
-            raise RuntimeError("boto3 is required for S3 media uploads") from e
-
-        kwargs: dict[str, str] = {}
-        if self.s3_cfg:
-            if self.s3_cfg.endpoint_url:
-                kwargs["endpoint_url"] = self.s3_cfg.endpoint_url
-            if self.s3_cfg.region_name:
-                kwargs["region_name"] = self.s3_cfg.region_name
-            if self.s3_cfg.aws_access_key_id:
-                kwargs["aws_access_key_id"] = self.s3_cfg.aws_access_key_id
-            if self.s3_cfg.aws_secret_access_key:
-                kwargs["aws_secret_access_key"] = self.s3_cfg.aws_secret_access_key
-            if self.s3_cfg.aws_session_token:
-                kwargs["aws_session_token"] = self.s3_cfg.aws_session_token
-
-        self.s3_client = boto3.client("s3", **kwargs)
-
     def _media_link(self, rel_path: Path) -> str:
         rel_posix = rel_path.as_posix().lstrip("/")
         if self.media_base_url:
             return f"{self.media_base_url}/{rel_posix}"
-        if self.s3_enabled:
-            key = rel_posix
-            if self.s3_prefix:
-                key = f"{self.s3_prefix}/{rel_posix}"
-            return f"s3://{self.s3_bucket}/{key}"
         return str(self.media_storage_output / rel_path)
-
-    def _upload_to_s3(self, local_path: Path, rel_path: Path) -> None:
-        if not self.s3_client:
-            raise RuntimeError("S3 client is not initialized")
-
-        rel_posix = rel_path.as_posix().lstrip("/")
-        key = f"{self.s3_prefix}/{rel_posix}" if self.s3_prefix else rel_posix
-
-        content_type = mimetypes.guess_type(str(local_path))[0]
-        extra = {"ContentType": content_type} if content_type else None
-#        if extra:
-#            # self.s3_client.upload_file(str(local_path), self.s3_bucket, key, ExtraArgs=extra)
-#        else:
-#            # self.s3_client.upload_file(str(local_path), self.s3_bucket, key)

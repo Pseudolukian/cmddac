@@ -18,14 +18,6 @@ class AdapterConfigMedia(BaseModel):
     media_base_url: str = Field(default="")  # e.g. /media — used as URL prefix in MD links
 
 
-class S3Config(BaseModel):
-    endpoint_url: Optional[str] = Field(default=None)
-    region_name: Optional[str] = Field(default=None)
-    aws_access_key_id: Optional[str] = Field(default=None)
-    aws_secret_access_key: Optional[str] = Field(default=None)
-    aws_session_token: Optional[str] = Field(default=None)
-
-
 class AdapterConfig(BaseModel):
     doc_output: str
     mkdocs_path: Optional[Path] = Field(default=None)
@@ -41,5 +33,4 @@ class AdapterConfig(BaseModel):
 
 class UMDAConfig(BaseModel):
     doc_input: Path
-    s3: Optional[S3Config] = Field(default=None)
     model_config = {"extra": "allow"}
