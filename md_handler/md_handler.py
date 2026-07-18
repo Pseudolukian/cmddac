@@ -115,10 +115,9 @@ class MDHandle:
         for src in sorted(src_root.rglob("*")):
             if not src.is_file():
                 continue
-            # Preserve the media/ segment in the destination path so that
-            # absolute /media/... links resolve correctly.
-            # docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
-            rel = src.relative_to(self.docs_dir)
+            # ponytail: rel относительно media/, не docs_dir — иначе в local_media_root
+            # (который уже = public/media) получается двойное /media/media/...
+            rel = src.relative_to(src_root)
             src_ext = src.suffix.lower().lstrip(".")
 
             if src_ext in img_exts and src_ext != "svg":
@@ -289,7 +288,12 @@ class MDHandle:
                     img_path_str = _FM_VAR_RE.sub(_var_repl, img_path_str)
 
                 if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
-                    rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
+                    # ponytail: убираем media/ префикс — он уже в media_base_url,
+                    # иначе двойное /media/media/ в итоговом URL
+                    stripped = img_path_str.lstrip("/")
+                    if stripped.startswith("media/"):
+                        stripped = stripped[len("media/"):]
+                    rel_path = Path(stripped).with_suffix(f".{self.image_ext}")
                     count += 1
                     return f"![{alt}]({self._media_link(rel_path)})"
 
@@ -302,6 +306,11 @@ class MDHandle:
                     rel_to_docs = src.relative_to(self.docs_dir)
                 except ValueError:
                     rel_to_docs = Path(src.name)
+
+                # ponytail: если src в docs/media/, убираем media/ префикс —
+                # local_media_root уже = public/media, иначе двойное /media/media/
+                if rel_to_docs.parts and rel_to_docs.parts[0] == "media":
+                    rel_to_docs = rel_to_docs.relative_to(Path("media"))
 
                 dst = (self.local_media_root / rel_to_docs).with_suffix(f".{self.image_ext}")
                 dst.parent.mkdir(parents=True, exist_ok=True)
