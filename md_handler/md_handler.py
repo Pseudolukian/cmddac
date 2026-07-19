@@ -312,6 +312,19 @@ class MDHandle:
                     count += 1
                     return f"![{alt}]({self._media_link(rel_path)})"
 
+                # Absolute /media/... links (and relative media/...) are served
+                # from the media storage output, populated in bulk by
+                # copy_media_dir(). Resolve frontmatter vars (e.g. {{ alias }})
+                # from the current file's frontmatter, rewrite the extension to
+                # image_ext (webp), and prepend media_base_url.
+                if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
+                    if "{{" in img_path_str:
+                        fm = _parse_frontmatter(md_file)
+                        img_path_str = _resolve_fm_vars(img_path_str, fm)
+                    rel_path = Path(img_path_str.lstrip("/")).with_suffix(f".{self.image_ext}")
+                    count += 1
+                    return f"![{alt}]({self._media_link(rel_path)})"
+
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
                     error(f"image not found: '{src}'", file=rel_md, line=line_no)
