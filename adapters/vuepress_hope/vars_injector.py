@@ -14,6 +14,8 @@ import yaml
 from pathlib import Path
 from typing import Any
 
+from logging_utils import warn
+
 # Matches {{ dotted.path }} but NOT {{ $frontmatter... }} and NOT {{ page.meta... }}
 _VAR_RE = re.compile(r'\{\{\s*((?![\$]|page\.meta)[\w]+(?:\.[\w]+)*)\s*\}\}')
 
@@ -62,18 +64,23 @@ class VuepressVarsInjector:
     def __init__(self, vars_data: dict, skip_prefixes: tuple[str, ...] = ("media.",)):
         self.vars_data = vars_data
         self.skip_prefixes = skip_prefixes
+        self._output_dir: Path | None = None
 
     def process_file(self, md_path: Path) -> bool:
         """Process one MD file. Returns True if modified."""
         content = md_path.read_text(encoding="utf-8")
+        rel_md = str(md_path.relative_to(self._output_dir)) if self._output_dir else str(md_path)
 
-        # Find all {{ var.path }} references
+        # Find all {{ var.path }} references with their line numbers
         var_refs: set[str] = set()
+        var_lines: dict[str, int] = {}
         for m in _VAR_RE.finditer(content):
             var_key = m.group(1)
             if any(var_key.startswith(p) for p in self.skip_prefixes):
                 continue
             var_refs.add(var_key)
+            if var_key not in var_lines:
+                var_lines[var_key] = content[:m.start()].count("\n") + 1
 
         if not var_refs:
             return False
@@ -85,7 +92,7 @@ class VuepressVarsInjector:
             if value is not None:
                 resolved[var_key] = value
             else:
-                print(f"  WARN: cannot resolve var '{var_key}'")
+                warn(f"cannot resolve variable '{var_key}'", file=rel_md, line=var_lines.get(var_key))
 
         if not resolved:
             return False
@@ -131,6 +138,7 @@ class VuepressVarsInjector:
 
     def process_dir(self, output_dir: Path) -> int:
         """Process all MD files in output_dir. Returns count of modified files."""
+        self._output_dir = output_dir
         count = 0
         for md_file in sorted(output_dir.rglob("*.md")):
             if self.process_file(md_file):

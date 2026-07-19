@@ -1,10 +1,7 @@
 aggdraw==1.3.19
 annotated-types==0.7.0
 attrs==26.1.0
-boto3==1.42.95
-botocore==1.42.95
 imageio==2.37.3
-jmespath==1.1.0
 lazy-loader==0.5
 networkx==3.4.2
 numpy==2.2.6
@@ -18,11 +15,9 @@ python-dateutil==2.9.0.post0
 pyyaml==6.0.3
 pyyml==0.0.2
 ruamel-yaml==0.19.1
-s3transfer==0.16.1
 scikit-image==0.25.2
 scipy==1.15.3
 six==1.17.0
 tifffile==2025.5.10
 typing-extensions==4.15.0
 typing-inspection==0.4.2
-urllib3==2.6.3

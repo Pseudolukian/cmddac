@@ -3,6 +3,8 @@ import sys
 import yaml
 from pathlib import Path
 
+from logging_utils import error
+
 _DEFAULT_SWAP_LIST = Path(__file__).parent / "swap_list.yml"
 
 
@@ -90,7 +92,9 @@ class MKdocsAdapter:
                 included = target.read_text(encoding='utf-8').rstrip()
                 return included
             else:
-                print(f"  [include] WARNING: file not found: {target}")
+                # ponytail: mkdocs _apply_includes не имеет md_file в области видимости —
+                # annotation без file/line, виден в Checks как сообщение
+                error(f"include not found: {file_path}")
                 return m.group(0)
 
         return pattern.sub(replacer, content)

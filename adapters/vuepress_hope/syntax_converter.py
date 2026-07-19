@@ -17,6 +17,8 @@ import re
 import yaml
 from pathlib import Path
 
+from logging_utils import error
+
 _SWAP_LIST = Path(__file__).parent / "swap_list.yml"
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
@@ -114,6 +116,7 @@ def _apply_include(content: str, pattern: re.Pattern, md_file: Path, src_root: P
 
     def replacer(m):
         file_path = m.group(1).strip()
+        line_no = content[:m.start()].count("\n") + 1
         target = src_root / file_path
         if not target.exists():
             parent = target.parent
@@ -125,7 +128,7 @@ def _apply_include(content: str, pattern: re.Pattern, md_file: Path, src_root: P
         if target.exists():
             return target.read_text(encoding="utf-8").rstrip()
 
-        print(f"  [include] WARNING: not found: {target} (in {md_file})")
+        error(f"include not found: {file_path}", file=str(md_file), line=line_no)
         return m.group(0)
 
     return pattern.sub(replacer, content)

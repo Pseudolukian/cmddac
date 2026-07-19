@@ -1,22 +1,25 @@
 import re
 import shutil
-import mimetypes
 import yaml
-from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
 
 from data_models.umda_data_yml import UMDAData
-from data_models.umda_config import AdapterConfig, S3Config
+from data_models.umda_config import AdapterConfig
 from data_models.psd_config import PSDConfig
 from psd_handler.psd_handler import PSDHandler
+from logging_utils import warn, error
 
 # Matches: ![alt]({{ media.path.var }})
 _PSD_LINK_RE = re.compile(r'(!\[(.+?)\]\(\{\{\s*([\w.]+)\s*\}\}\))')
 
-# Matches: ![alt](path/to/image.ext) — local image, not a {{ }} var, not http
-# Alt text may contain [] (e.g. PSD layer directives like Focuses=["A"])
-_IMG_LINK_RE = re.compile(r'(!\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]\((?!https?://)(?!\{\{)([^)]+\.(?:png|jpg|jpeg|gif|webp|svg))\))', re.IGNORECASE)
+# Matches: ![alt](path/to/image.ext) — local image, not http.
+# Alt text may contain [] (e.g. PSD layer directives like Focuses=["A"]).
+# Path may start with {{ var.path }} (e.g. {{ media.screenshots.diagram }}/foo.png);
+# such vars are resolved in img_replacer from global UMDAData.
+# Note: PSD-style links ![alt]({{ var }}) (no extension) are matched earlier by
+# _PSD_LINK_RE, so allowing {{ here cannot shadow them.
+_IMG_LINK_RE = re.compile(r'(!\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]\((?!https?://)([^)]+\.(?:png|jpg|jpeg|gif|webp|svg))\))', re.IGNORECASE)
 
 # Parses alt: "Base;Focuses=[A,B];Frames=[C,D]"
 _ARG_RE = re.compile(r'(\w+)=\[([^\]]*)\]')
@@ -67,80 +70,6 @@ def _resolve_fm_vars(text: str, fm: dict) -> str:
     return _FM_VAR_RE.sub(repl, text)
 
 
-def _is_s3_media_target(media_out: str, s3_cfg: S3Config | None) -> bool:
-    """Detect S3 media target.
-
-    Supported forms:
-    - s3://bucket[/prefix]
-    - bucket-name (shorthand, only when S3 config is present)
-    """
-    raw = str(media_out).strip()
-    if raw.lower().startswith("s3://"):
-        return True
-    if not s3_cfg:
-        return False
-    if not raw:
-        return False
-    if "/" in raw or "\\" in raw:
-        return False
-    if raw.startswith((".", "~")):
-        return False
-    if Path(raw).is_absolute():
-        return False
-    return True
-
-
-def _parse_s3_target(media_out: str) -> tuple[str, str]:
-    """Parse S3 target from s3://bucket[/prefix] or bucket-name shorthand."""
-    raw = str(media_out).strip()
-    if raw.lower().startswith("s3://"):
-        parsed = urlparse(raw)
-        bucket = parsed.netloc.strip()
-        prefix = parsed.path.strip("/")
-        return bucket, prefix
-
-    # Shorthand: bucket-name
-    return raw.strip("/"), ""
-
-
-def _normalize_s3_media_base_url(
-    raw_base_url: str,
-    s3_cfg: S3Config | None,
-    s3_bucket: str,
-    s3_prefix: str,
-) -> str:
-    """Resolve media base URL for S3 mode.
-
-    Rules:
-    - If base URL is an absolute http(s) URL, keep it as-is.
-    - If base URL is empty, or looks like bucket shorthand/s3://..., build URL
-      from S3 endpoint + bucket + prefix.
-    """
-    base = (raw_base_url or "").strip().rstrip("/")
-    if base.lower().startswith(("http://", "https://")):
-        return base
-
-    endpoint = (s3_cfg.endpoint_url.strip().rstrip("/") if s3_cfg and s3_cfg.endpoint_url else "")
-    if not endpoint:
-        return base
-
-    inferred_base = f"{endpoint}/{s3_bucket}"
-    if s3_prefix:
-        inferred_base = f"{inferred_base}/{s3_prefix}"
-
-    if not base:
-        return inferred_base
-
-    base_s3_bucket, base_s3_prefix = _parse_s3_target(base)
-    if base.lower().startswith("s3://") or "/" not in base:
-        resolved = f"{endpoint}/{base_s3_bucket}"
-        if base_s3_prefix:
-            resolved = f"{resolved}/{base_s3_prefix}"
-        return resolved
-
-    return base
-
-
 class MDHandle:
     def __init__(
         self,
@@ -148,28 +77,26 @@ class MDHandle:
         docs_dir: Path,
         adapter_cfg: AdapterConfig,
         psd_handler: PSDHandler,
-        s3_cfg: S3Config | None = None,
-        local_media_root: Path | None = None,
     ):
         self.data = data
         self.docs_dir = Path(docs_dir)
         self.adapter_cfg = adapter_cfg
         self.doc_output = Path(adapter_cfg.doc_output)
-        self.media_storage_output_raw = str(adapter_cfg.media.media_storage_output)
-        self.s3_enabled = _is_s3_media_target(self.media_storage_output_raw, s3_cfg)
-        self.local_media_root = Path(local_media_root) if local_media_root else Path(self.media_storage_output_raw)
-        self.media_storage_output = Path(self.media_storage_output_raw) if not self.s3_enabled else self.local_media_root
+        self.media_storage_output = Path(adapter_cfg.media.media_storage_output)
+        self.local_media_root = self.media_storage_output
         self.image_ext = adapter_cfg.media.image_extantion.lower().lstrip(".")
         self.media_base_url = adapter_cfg.media.media_base_url.rstrip("/")
         self.psd_handler = psd_handler
-        self.s3_cfg = s3_cfg
-        self.s3_client = None
-        self.s3_bucket = ""
-        self.s3_prefix = ""
 
         self.local_media_root.mkdir(parents=True, exist_ok=True)
-        if self.s3_enabled:
-            self._init_s3_client()
+
+    def _rel_md(self, md_file: Path) -> str:
+        # ponytail: путь относительно docs_dir для GitHub annotations — читаемость
+        # важнее подсветки в PR view (относительный путь вне workspace root не подсветит)
+        try:
+            return str(md_file.relative_to(self.docs_dir))
+        except ValueError:
+            return str(md_file)
 
     def run(self):
         # .meta.yml support removed — metadata now lives in frontmatter
@@ -197,10 +124,9 @@ class MDHandle:
         for src in sorted(src_root.rglob("*")):
             if not src.is_file():
                 continue
-            # Preserve the media/ segment in the destination path so that
-            # absolute /media/... links (and S3 media_base_url + /media/...)
-            # resolve correctly. docs_dir/media/screenshots/... -> local_media_root/media/screenshots/...
-            rel = src.relative_to(self.docs_dir)
+            # ponytail: rel относительно media/, не docs_dir — иначе в local_media_root
+            # (который уже = public/media) получается двойное /media/media/...
+            rel = src.relative_to(src_root)
             src_ext = src.suffix.lower().lstrip(".")
 
             if src_ext in img_exts and src_ext != "svg":
@@ -262,18 +188,20 @@ class MDHandle:
 
     def _expand_includes(self, content: str, md_file: Path, include_stack: set[Path]) -> tuple[str, int]:
         include_count = 0
+        rel_md = self._rel_md(md_file)
 
         def replacer(m: re.Match) -> str:
             nonlocal include_count
             include_path = m.group(1).strip()
+            line_no = content[:m.start()].count("\n") + 1
             target = self._resolve_include_target(include_path, md_file)
             if not target:
-                print(f"  [include] WARNING: not found: {include_path} (in {md_file})")
+                error(f"include not found: {include_path}", file=rel_md, line=line_no)
                 return m.group(0)
 
             target_resolved = target.resolve()
             if target_resolved in include_stack:
-                print(f"  [include] WARNING: recursive include skipped: {target} (in {md_file})")
+                error(f"recursive include skipped: {target}", file=rel_md, line=line_no)
                 return m.group(0)
 
             included_raw = target.read_text(encoding="utf-8")
@@ -291,7 +219,7 @@ class MDHandle:
 
         current_file = md_file.resolve()
         if current_file in include_stack:
-            print(f"  [include] WARNING: recursive include skipped: {md_file}")
+            error(f"recursive include skipped: {md_file}", file=self._rel_md(md_file))
             return content, count
 
         include_stack.add(current_file)
@@ -304,10 +232,12 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2).strip()
                 var_path = m.group(3).strip()
+                line_no = content[:m.start()].count("\n") + 1
+                rel_md = self._rel_md(md_file)
 
                 psd_path = self.data.resolve(var_path)
                 if not psd_path:
-                    print(f"  WARN: cannot resolve '{var_path}' — skipping")
+                    warn(f"cannot resolve variable '{var_path}'", file=rel_md, line=line_no)
                     return full_match
 
                 parts = alt.split(";")
@@ -324,15 +254,11 @@ class MDHandle:
                     config = PSDConfig(psd_path=str(psd_path), base_layer=base_layer, **kwargs)
                     out_path = self.psd_handler.render(config)
                 except Exception as e:
-                    print(f"  ERROR rendering '{alt}': {e}")
+                    error(f"rendering PSD '{alt}': {e}", file=rel_md, line=line_no)
                     return full_match
 
                 count += 1
                 out = Path(out_path)
-                if self.s3_enabled and out.is_relative_to(self.local_media_root):
-                    rel_path = out.relative_to(self.local_media_root)
-                    # self._upload_to_s3(out, rel_path)
-                    return f"![{alt}]({self._media_link(rel_path)})"
                 if self.media_base_url and out.is_relative_to(self.media_storage_output):
                     rel_path = out.relative_to(self.media_storage_output)
                     return f"![{alt}]({self._media_link(rel_path)})"
@@ -347,6 +273,44 @@ class MDHandle:
                 full_match = m.group(1)
                 alt = m.group(2)
                 img_path_str = m.group(3).strip()
+                line_no = content[:m.start()].count("\n") + 1
+                rel_md = self._rel_md(md_file)
+
+                # Resolve {{ var.path }} in image paths. Primary source is the
+                # global UMDAData (vars/media.yml etc. with proper nested
+                # structure); frontmatter of the current file is a fallback
+                # (tried both nested and as a flat "a.b.c" key, since YAML
+                # parses `a.b.c: value` as a single string key, not nested).
+                # After resolution the path becomes /media/... or media/...
+                # and is served from the media storage output, populated in
+                # bulk by copy_media_dir(). The extension is rewritten to
+                # image_ext (webp) and media_base_url is prepended.
+                if "{{" in img_path_str:
+                    fm = _parse_frontmatter(md_file)
+
+                    def _resolve_var(var_key: str):
+                        val = self.data.resolve(var_key)
+                        if val is None and fm:
+                            val = _resolve_from_dict(fm, var_key)
+                        if val is None and fm:
+                            val = fm.get(var_key)
+                        return val
+
+                    def _var_repl(mm: re.Match) -> str:
+                        resolved = _resolve_var(mm.group(1))
+                        return str(resolved) if resolved is not None else mm.group(0)
+
+                    img_path_str = _FM_VAR_RE.sub(_var_repl, img_path_str)
+
+                if img_path_str.startswith("/media/") or img_path_str.startswith("media/"):
+                    # ponytail: убираем media/ префикс — он уже в media_base_url,
+                    # иначе двойное /media/media/ в итоговом URL
+                    stripped = img_path_str.lstrip("/")
+                    if stripped.startswith("media/"):
+                        stripped = stripped[len("media/"):]
+                    rel_path = Path(stripped).with_suffix(f".{self.image_ext}")
+                    count += 1
+                    return f"![{alt}]({self._media_link(rel_path)})"
 
                 # Absolute /media/... links (and relative media/...) are served
                 # from the media storage output, populated in bulk by
@@ -363,13 +327,18 @@ class MDHandle:
 
                 src = (md_file.parent / img_path_str).resolve()
                 if not src.exists():
-                    print(f"  WARN: image not found '{src}' — skipping")
+                    error(f"image not found: '{src}'", file=rel_md, line=line_no)
                     return full_match
 
                 try:
                     rel_to_docs = src.relative_to(self.docs_dir)
                 except ValueError:
                     rel_to_docs = Path(src.name)
+
+                # ponytail: если src в docs/media/, убираем media/ префикс —
+                # local_media_root уже = public/media, иначе двойное /media/media/
+                if rel_to_docs.parts and rel_to_docs.parts[0] == "media":
+                    rel_to_docs = rel_to_docs.relative_to(Path("media"))
 
                 dst = (self.local_media_root / rel_to_docs).with_suffix(f".{self.image_ext}")
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -383,10 +352,6 @@ class MDHandle:
                         img.convert(mode).save(dst, format=self.image_ext)
 
                 count += 1
-                if self.s3_enabled and dst.is_relative_to(self.local_media_root):
-                    rel_path = dst.relative_to(self.local_media_root)
-#                # self._upload_to_s3(dst, rel_path)
-                    return f"![{alt}]({self._media_link(rel_path)})"
                 if self.media_base_url:
                     rel_path = dst.relative_to(self.media_storage_output)
                     return f"![{alt}]({self._media_link(rel_path)})"
@@ -397,59 +362,8 @@ class MDHandle:
         finally:
             include_stack.remove(current_file)
 
-    def _init_s3_client(self) -> None:
-        self.s3_bucket, self.s3_prefix = _parse_s3_target(self.media_storage_output_raw)
-        if not self.s3_bucket:
-            raise ValueError("S3 media_storage_output must be in format s3://bucket[/prefix] or bucket-name")
-
-        self.media_base_url = _normalize_s3_media_base_url(
-            self.media_base_url,
-            self.s3_cfg,
-            self.s3_bucket,
-            self.s3_prefix,
-        )
-
-        try:
-            import boto3
-        except ImportError as e:
-            raise RuntimeError("boto3 is required for S3 media uploads") from e
-
-        kwargs: dict[str, str] = {}
-        if self.s3_cfg:
-            if self.s3_cfg.endpoint_url:
-                kwargs["endpoint_url"] = self.s3_cfg.endpoint_url
-            if self.s3_cfg.region_name:
-                kwargs["region_name"] = self.s3_cfg.region_name
-            if self.s3_cfg.aws_access_key_id:
-                kwargs["aws_access_key_id"] = self.s3_cfg.aws_access_key_id
-            if self.s3_cfg.aws_secret_access_key:
-                kwargs["aws_secret_access_key"] = self.s3_cfg.aws_secret_access_key
-            if self.s3_cfg.aws_session_token:
-                kwargs["aws_session_token"] = self.s3_cfg.aws_session_token
-
-        self.s3_client = boto3.client("s3", **kwargs)
-
     def _media_link(self, rel_path: Path) -> str:
         rel_posix = rel_path.as_posix().lstrip("/")
         if self.media_base_url:
             return f"{self.media_base_url}/{rel_posix}"
-        if self.s3_enabled:
-            key = rel_posix
-            if self.s3_prefix:
-                key = f"{self.s3_prefix}/{rel_posix}"
-            return f"s3://{self.s3_bucket}/{key}"
         return str(self.media_storage_output / rel_path)
-
-    def _upload_to_s3(self, local_path: Path, rel_path: Path) -> None:
-        if not self.s3_client:
-            raise RuntimeError("S3 client is not initialized")
-
-        rel_posix = rel_path.as_posix().lstrip("/")
-        key = f"{self.s3_prefix}/{rel_posix}" if self.s3_prefix else rel_posix
-
-        content_type = mimetypes.guess_type(str(local_path))[0]
-        extra = {"ContentType": content_type} if content_type else None
-#        if extra:
-#            # self.s3_client.upload_file(str(local_path), self.s3_bucket, key, ExtraArgs=extra)
-#        else:
-#            # self.s3_client.upload_file(str(local_path), self.s3_bucket, key)

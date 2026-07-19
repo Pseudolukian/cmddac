@@ -5,6 +5,7 @@ from pathlib import Path
 
 from data_models.umda_data_yml import UMDAData
 from data_models.umda_config import UMDAConfig, AdapterConfig
+from logging_utils import error
 
 # UMDA_ROOT is the directory where umda package lives
 UMDA_ROOT = Path(__file__).parent.parent
@@ -49,8 +50,6 @@ class YMLHandler:
         raw = self._load_raw(self.umda_yml_file)
 
         raw_config = dict(raw.get("config", {}))
-        if "S3" in raw_config and "s3" not in raw_config:
-            raw_config["s3"] = raw_config.pop("S3")
         self.config = UMDAConfig(**raw_config)
 
         # Parse adapters — key in yml is "adapers" (legacy typo kept)
@@ -94,7 +93,7 @@ class YMLHandler:
         included: dict = {}
         for inc_path in include_paths:
             if not inc_path.exists():
-                print(f"WARN: include not found: {inc_path}")
+                error(f"include not found: {inc_path}", file=str(file_path))
                 continue
             included.update(self._load_with_includes(inc_path))
 

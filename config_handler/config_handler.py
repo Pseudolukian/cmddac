@@ -14,6 +14,7 @@ from typing import Any
 from ruamel.yaml import YAML as RuamelYAML
 
 from data_models.umda_config import AdapterConfigSection
+from logging_utils import error
 
 # Matches top-level: include: ./some/file.yml (multiple allowed)
 _INCLUDE_RE = re.compile(r'^include:\s*(.+)$', re.MULTILINE)
@@ -97,7 +98,7 @@ def _load_with_includes(file_path: Path) -> dict:
     included: dict = {}
     for inc_path in include_paths:
         if not inc_path.exists():
-            print(f"[MkDocsConfig] WARN: include not found: {inc_path}")
+            error(f"include not found: {inc_path}", file=str(file_path))
             continue
         included = _deep_merge(included, _load_with_includes(inc_path))
 
@@ -128,13 +129,13 @@ class MkDocsConfigHandler:
         for section_name, section_path in self.cfg.sections.items():
             p = Path(section_path)
             if not p.exists():
-                print(f"[MkDocsConfig] WARN: section file not found: {p}")
+                error(f"section file not found: {p}", file=str(self.src_config))
                 continue
 
             section_data = _load_with_includes(p)
 
             if not section_data:
-                print(f"[MkDocsConfig] WARN: empty section file: {p}")
+                error(f"empty section file: {p}", file=str(self.src_config))
                 continue
 
             # Unwrap if file has {section_name: ...} wrapper
