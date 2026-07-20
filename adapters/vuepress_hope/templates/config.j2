@@ -3,16 +3,7 @@ import { hopeTheme } from "vuepress-theme-hope";
 import { viteBundler } from "@vuepress/bundler-vite";
 
 export default defineUserConfig({
-    bundler: viteBundler({
-        viteOptions: {
-            build: {
-                sourcemap: true,
-                rollupOptions: {
-                    external: [/^\/media\/.*/],
-                },
-            },
-        },
-    }),
+    bundler: viteBundler(),
     base: "{{BASE}}",
     lang: "ru-RU",
 
